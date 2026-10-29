@@ -19,7 +19,47 @@ async function request(url, init) {
 
 function load() {
   if (!existsSync(CFG)) return {};
-  return JSON.parse(readFileSync(CFG, "utf-8"));
+  try {
+    return JSON.parse(readFileSync(CFG, "utf-8"));
+  } catch {
+    throw new Error(`${CFG} is corrupt; delete it and run 'ch-cli login' again`);
+  }
+}
+
+/** Reads a password without echoing it (TTY), or one line from piped stdin. */
+function readPassword(prompt) {
+  return new Promise((resolve, reject) => {
+    const { stdin, stdout } = process;
+    if (!stdin.isTTY) {
+      let data = "";
+      stdin.setEncoding("utf8");
+      stdin.on("data", (c) => (data += c));
+      stdin.on("end", () => resolve(data.split(/\r?\n/)[0]));
+      stdin.on("error", reject);
+      return;
+    }
+    stdout.write(prompt);
+    stdin.setRawMode(true);
+    stdin.setEncoding("utf8");
+    let pw = "";
+    const onData = (ch) => {
+      if (ch === "\r" || ch === "\n" || ch === "\u0004") {
+        stdin.setRawMode(false);
+        stdin.pause();
+        stdin.off("data", onData);
+        stdout.write("\n");
+        resolve(pw);
+      } else if (ch === "\u0003") {
+        stdin.setRawMode(false);
+        reject(new Error("Cancelled"));
+      } else if (ch === "\u007f" || ch === "\b") {
+        pw = pw.slice(0, -1);
+      } else {
+        pw += ch;
+      }
+    };
+    stdin.on("data", onData);
+  });
 }
 function save(data) {
   // The session token grants full account access: keep it private to this user.
@@ -50,7 +90,10 @@ async function api(method, path, body) {
 }
 
 async function login(email, password) {
-  if (!email || !password) throw new Error("Usage: ch-cli login <email> <password>");
+  if (!email) throw new Error("Usage: ch-cli login <email>   (you'll be asked for the password)");
+  // A password on the command line lands in shell history and `ps`; prefer the prompt or env var.
+  password ||= process.env.CRAFTHOST_PASSWORD || (await readPassword("Password: "));
+  if (!password) throw new Error("No password given");
   const res = await request(`${BASE}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -60,7 +103,9 @@ async function login(email, password) {
   const setCookie = res.headers.get("set-cookie");
   if (!setCookie) {
     const text = await res.text();
-    throw new Error(text || "Login failed");
+    let message = text;
+    try { message = JSON.parse(text).error || text; } catch {}
+    throw new Error(message || `Login failed (HTTP ${res.status})`);
   }
   const m = setCookie.match(/token=([^;]+)/);
   if (!m) throw new Error("No token in response");
@@ -164,7 +209,7 @@ const HELP = `
 Usage: ch-cli <command> [options]
 
 Commands:
-  login <email> <password>        Log in and save session
+  login <email>                   Log in (prompts for the password) and save session
   list  (or: servers list)        List all servers
   status <id>                     Show server details
   start <id>                      Start server
@@ -181,6 +226,7 @@ Commands:
 
 Environment:
   CRAFTHOST_API         API base URL (default: http://localhost:4000)
+  CRAFTHOST_PASSWORD     Password for login, instead of the prompt (e.g. in scripts)
   CRAFTHOST_TIMEOUT_MS  Give up on an unresponsive API after this many ms (default: 20000)
 `;
 

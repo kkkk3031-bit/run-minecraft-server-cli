@@ -86,7 +86,7 @@ checksum-verified while streaming to disk, and `install` refuses to replace the 
 
 ```bash
 export CRAFTHOST_API=https://crafthost-production.up.railway.app
-node ch-cli.mjs login <user> <pass>
+node ch-cli.mjs login <email>            # prompts for the password (or set CRAFTHOST_PASSWORD)
 node ch-cli.mjs list                    # your servers + status
 node ch-cli.mjs start <server-id>        # the 8-char id prefix from `list` works
 node ch-cli.mjs stop <server-id>

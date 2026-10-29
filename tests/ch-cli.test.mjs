@@ -39,7 +39,37 @@ test("login with a bad password fails with the API's message", async () => {
   home = mkdtempSync(join(tmpdir(), "chcli-"));
   const r = await run("login", "a@b.c", "wrong");
   assert.equal(r.code, 1);
-  assert.match(r.err, /Invalid email or password/);
+  assert.match(r.err, /^Error: Invalid email or password$/m); // the message, not raw JSON
+});
+
+test("login reads the password from CRAFTHOST_PASSWORD, keeping it off the command line", async () => {
+  home = mkdtempSync(join(tmpdir(), "chcli-"));
+  const r = await new Promise((ok) => execFile(process.execPath, [CLI, "login", "a@b.c"], {
+    env: { ...process.env, CRAFTHOST_API: mock.url, HOME: home, USERPROFILE: home, CRAFTHOST_PASSWORD: "secret" }, timeout: 15000,
+  }, (e, out, err) => ok({ code: e ? e.code : 0, out, err })));
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /Logged in as a@b\.c/);
+});
+
+test("login reads the password from piped stdin", async () => {
+  home = mkdtempSync(join(tmpdir(), "chcli-"));
+  const child = execFile(process.execPath, [CLI, "login", "a@b.c"], {
+    env: { ...process.env, CRAFTHOST_API: mock.url, HOME: home, USERPROFILE: home, CRAFTHOST_PASSWORD: "" }, timeout: 15000,
+  });
+  let out = "";
+  child.stdout.on("data", (d) => (out += d));
+  child.stdin.end("secret\n");
+  const code = await new Promise((ok) => child.on("exit", ok));
+  assert.equal(code, 0);
+  assert.match(out, /Logged in as a@b\.c/);
+});
+
+test("a corrupt session file gives a clear fix", async () => {
+  home = mkdtempSync(join(tmpdir(), "chcli-"));
+  writeFileSync(join(home, ".crafthost-cli.json"), "{oops");
+  const r = await run("list");
+  assert.equal(r.code, 1);
+  assert.match(r.err, /is corrupt; delete it and run 'ch-cli login' again/);
 });
 
 test("login without arguments prints usage instead of sending a request", async () => {
