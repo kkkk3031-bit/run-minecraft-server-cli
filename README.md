@@ -77,7 +77,8 @@ node mc-local.mjs stop                  # graceful stop
 Supported engines: **paper · vanilla · fabric · purpur**. Config lives in `mc-local.json`, created on `init`.
 `--ram`, `--port` and `--java` are saved there, so you only pass them once. Use `--dir <path>` (or `MC_LOCAL_DIR`)
 to manage a server in another folder, and `install <type> <ver> --print-url` to see the download link without downloading.
-Paper and vanilla jars are checksum-verified after download.
+Use `latest` as the version for the newest stable release (`install fabric latest`). Paper and vanilla jars are
+checksum-verified while streaming to disk, and `install` refuses to replace the jar of a running server.
 
 > Java 21 is required for Minecraft 1.21+, Java 17 for 1.18–1.20.
 

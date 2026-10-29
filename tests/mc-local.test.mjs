@@ -182,3 +182,30 @@ test("backup without a world fails clearly", async () => {
   assert.equal(r.code, 1);
   assert.match(r.err, /No world\/ directory found/);
 });
+
+test("a corrupt mc-local.json gives a clear message, not a stack trace", async () => {
+  const dir = tmp();
+  writeFileSync(join(dir, "mc-local.json"), "{ not json");
+  const r = await run(["status", dir]);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /mc-local\.json is not valid JSON/);
+});
+
+test("install refuses to replace server.jar while the server runs", async () => {
+  const dir = tmp();
+  await run(["init", dir]);
+  writeFileSync(join(dir, ".mc-local.pid"), String(process.pid)); // a live pid: this test runner
+  const r = await run(["install", "paper", "1.21.1", "--dir", dir]);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /Stop the server first/);
+});
+
+test("backup of a running server warns that unsaved chunks are missing", async () => {
+  const dir = tmp();
+  mkdirSync(join(dir, "world"));
+  writeFileSync(join(dir, "world", "level.dat"), "data");
+  writeFileSync(join(dir, ".mc-local.pid"), String(process.pid));
+  const r = await run(["backup", dir]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.err, /server is running/);
+});

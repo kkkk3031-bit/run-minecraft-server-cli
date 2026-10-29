@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, chmodSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
@@ -11,7 +11,9 @@ function load() {
   return JSON.parse(readFileSync(CFG, "utf-8"));
 }
 function save(data) {
-  writeFileSync(CFG, JSON.stringify(data, null, 2));
+  // The session token grants full account access: keep it private to this user.
+  writeFileSync(CFG, JSON.stringify(data, null, 2), { mode: 0o600 });
+  try { chmodSync(CFG, 0o600); } catch {} // tighten a file created by an older version
 }
 
 async function api(method, path, body) {

@@ -3,7 +3,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startMock, SERVERS } from "./helpers/mock-crafthost.mjs";
@@ -29,6 +29,9 @@ test("login with good credentials saves the session token", async () => {
   assert.equal(r.code, 0, r.err);
   assert.match(r.out, /Logged in as a@b\.c/);
   assert.equal(JSON.parse(readFileSync(join(home, ".crafthost-cli.json"), "utf-8")).token, "tok123");
+  if (process.platform !== "win32") {
+    assert.equal(statSync(join(home, ".crafthost-cli.json")).mode & 0o777, 0o600, "token file is private");
+  }
 });
 
 test("login with a bad password fails with the API's message", async () => {

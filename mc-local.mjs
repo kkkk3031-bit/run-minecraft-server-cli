@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { spawn, execFileSync } from "child_process";
 import { createHash } from "crypto";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, unlinkSync, renameSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, unlinkSync, renameSync, createWriteStream } from "fs";
+import { Readable, Transform } from "stream";
+import { pipeline } from "stream/promises";
 import { join, resolve } from "path";
 import { parseArgs } from "util";
 
@@ -17,7 +19,7 @@ Commands:
   console [dir]           Same as start (the console is the start terminal)
   command <cmd>           How to send one command to a running server
   backup [dir]            Zip world/, world_nether/, world_the_end/
-  install <type> <ver>    Download server JAR (paper, vanilla, fabric, purpur)
+  install <type> <ver>    Download server JAR (paper, vanilla, fabric, purpur); <ver> may be 'latest'
 
 Options:
   --dir   <path>          Server directory (default: $MC_LOCAL_DIR or current dir)
@@ -44,7 +46,11 @@ const DEFAULT_CONFIG = { java: "java", ram_mb: 1024, port: 25565, type: "paper",
 function loadConfig(dir) {
   const p = join(dir, "mc-local.json");
   if (!existsSync(p)) return { ...DEFAULT_CONFIG };
-  return { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(p, "utf-8")) };
+  try {
+    return { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(p, "utf-8")) };
+  } catch (err) {
+    throw new Error(`${p} is not valid JSON (${err.message}). Fix or delete it, then run 'mc-local init'.`);
+  }
 }
 
 function saveConfig(dir, cfg) {
@@ -251,8 +257,34 @@ async function getJson(url) {
   return res.json();
 }
 
-/** Returns { url, sha256?, sha1? } for the requested server type and version. */
-async function resolveDownload(type, version) {
+/** Resolves "latest" to the newest stable Minecraft version the given server type supports. */
+async function latestVersion(type) {
+  switch (type) {
+    case "paper": {
+      const { versions } = await getJson("https://fill.papermc.io/v3/projects/paper"); // newest group first
+      for (const group of Object.values(versions)) {
+        const stable = group.find((v) => !v.includes("-")); // skip -pre / -rc
+        if (stable) return stable;
+      }
+      throw new Error("Paper lists no stable version");
+    }
+    case "fabric":
+      return (await getJson("https://meta.fabricmc.net/v2/versions/game")).find((v) => v.stable).version;
+    case "purpur":
+      return (await getJson("https://api.purpurmc.org/v2/purpur")).versions.at(-1); // oldest first
+    default:
+      return "latest"; // vanilla resolves it from its own manifest
+  }
+}
+
+/** Returns { url, version, sha256?, sha1? } for the requested server type and version. */
+async function resolveDownload(type, requested) {
+  const version = requested.toLowerCase() === "latest" ? await latestVersion(type) : requested;
+  const found = await resolveExact(type, version);
+  return { version: found.version || version, ...found };
+}
+
+async function resolveExact(type, version) {
   switch (type) {
     case "paper": {
       // Paper's v2 API was shut down on 2026-07-01; v3 ("Fill") lists builds newest first.
@@ -269,7 +301,7 @@ async function resolveDownload(type, version) {
       if (!ver) throw new Error(`Unknown vanilla version: ${version}`);
       const pkg = await getJson(ver.url);
       if (!pkg.downloads?.server) throw new Error(`Vanilla ${id} has no server jar`);
-      return { url: pkg.downloads.server.url, sha1: pkg.downloads.server.sha1 };
+      return { url: pkg.downloads.server.url, sha1: pkg.downloads.server.sha1, version: id };
     }
     case "fabric": {
       const [loaders, installers] = await Promise.all([
@@ -288,7 +320,8 @@ async function resolveDownload(type, version) {
 }
 
 async function install(dir, type, version, flags) {
-  if (!type || !version) throw new Error("Usage: mc-local install <paper|vanilla|fabric|purpur> <version>");
+  if (!type || !version) throw new Error("Usage: mc-local install <paper|vanilla|fabric|purpur> <version|latest>");
+  if (!flags["print-url"] && isRunning(dir)) throw new Error("Stop the server first (mc-local stop) — server.jar is in use.");
   const target = await resolveDownload(type, version);
   if (flags["print-url"]) {
     console.log(target.url);
@@ -296,28 +329,46 @@ async function install(dir, type, version, flags) {
   }
   mkdirSync(dir, { recursive: true });
   const cfg = loadConfig(dir);
-  console.log(`Downloading ${type} ${version} server JAR…`);
+  console.log(`Downloading ${type} ${target.version} server JAR…`);
   console.log("From:", target.url);
   const res = await fetchRetry(target.url);
-  if (!res.ok) throw new Error(`Download failed: HTTP ${res.status} (is ${version} a valid ${type} version?)`);
-  const buf = Buffer.from(await res.arrayBuffer());
-  for (const algo of ["sha256", "sha1"]) {
-    if (target[algo] && createHash(algo).update(buf).digest("hex") !== target[algo]) {
-      throw new Error(`Downloaded jar failed its ${algo} check; nothing was written. Try again.`);
-    }
-  }
+  if (!res.ok || !res.body) throw new Error(`Download failed: HTTP ${res.status} (is ${version} a valid ${type} version?)`);
+
+  // Stream to disk while hashing, so a 100 MB jar never sits in memory.
   const jarPath = join(dir, "server.jar");
-  writeFileSync(jarPath + ".part", buf);
-  renameSync(jarPath + ".part", jarPath); // never leave a half-written server.jar
+  const partPath = jarPath + ".part";
+  const hashes = Object.fromEntries(["sha256", "sha1"].filter((a) => target[a]).map((a) => [a, createHash(a)]));
+  let bytes = 0;
+  const hasher = new Transform({
+    transform(chunk, _enc, done) {
+      bytes += chunk.length;
+      for (const h of Object.values(hashes)) h.update(chunk);
+      done(null, chunk);
+    },
+  });
+  try {
+    await pipeline(Readable.fromWeb(res.body), hasher, createWriteStream(partPath));
+    for (const [algo, h] of Object.entries(hashes)) {
+      if (h.digest("hex") !== target[algo]) throw new Error(`Downloaded jar failed its ${algo} check; nothing was installed. Try again.`);
+    }
+  } catch (err) {
+    try { unlinkSync(partPath); } catch {}
+    throw err;
+  }
+  renameSync(partPath, jarPath); // never leave a half-written server.jar
   cfg.type = type;
-  cfg.version = version;
+  cfg.version = target.version;
   saveConfig(dir, cfg);
-  console.log(`Downloaded ${(buf.length / 1024 / 1024).toFixed(1)} MB to ${jarPath}`);
+  console.log(`Downloaded ${(bytes / 1024 / 1024).toFixed(1)} MB to ${jarPath}`);
 }
 
 async function backup(dir) {
   const worlds = ["world", "world_nether", "world_the_end"].filter((w) => existsSync(join(dir, w)));
   if (!worlds.length) throw new Error("No world/ directory found.");
+  if (isRunning(dir)) {
+    console.warn("Warning: the server is running — chunks it hasn't saved yet won't be in this backup.");
+    console.warn("For a consistent copy, type 'save-all' in the server console first, or stop the server.");
+  }
   const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   let backupPath = join(dir, `backup-${ts}.zip`);
   try {

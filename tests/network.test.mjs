@@ -35,6 +35,16 @@ for (const type of ["paper", "vanilla", "fabric", "purpur"]) {
   });
 }
 
+for (const type of ["paper", "vanilla", "fabric", "purpur"]) {
+  test(`${type} latest: resolves to a concrete stable version`, { skip: !NET && "set RUN_NETWORK_TESTS=1" }, async () => {
+    const r = await run(["install", type, "latest", "--print-url"]);
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out.trim(), /^https:\/\//);
+    // "latest" may only appear as Purpur's build selector (/latest/download), never as the version
+    assert.doesNotMatch(r.out, /\/latest\/(?!download)|-rc|-pre/i, "no unresolved or pre-release version in the URL");
+  });
+}
+
 test("unknown paper version fails with an HTTP error, not a crash", { skip: !NET && "set RUN_NETWORK_TESTS=1" }, async () => {
   const r = await run(["install", "paper", "0.0.1", "--print-url"]);
   assert.equal(r.code, 1);
