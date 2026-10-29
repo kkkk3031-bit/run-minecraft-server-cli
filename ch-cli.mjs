@@ -5,6 +5,17 @@ import { join } from "path";
 
 const CFG = join(homedir(), ".crafthost-cli.json");
 const BASE = process.env.CRAFTHOST_API || "http://localhost:4000";
+const TIMEOUT_MS = Number(process.env.CRAFTHOST_TIMEOUT_MS) || 20000;
+
+/** fetch that gives up after TIMEOUT_MS instead of hanging on an unresponsive API. */
+async function request(url, init) {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
+  } catch (err) {
+    if (err.name === "TimeoutError") throw new Error(`No response from ${BASE} within ${TIMEOUT_MS / 1000}s`);
+    throw new Error(`Cannot reach ${BASE}: ${err.cause?.code || err.cause?.message || err.message}`);
+  }
+}
 
 function load() {
   if (!existsSync(CFG)) return {};
@@ -20,7 +31,7 @@ async function api(method, path, body) {
   const cfg = load();
   const headers = { "Content-Type": "application/json" };
   if (cfg.token) headers["Cookie"] = `token=${cfg.token}`;
-  const res = await fetch(`${BASE}/api${path}`, {
+  const res = await request(`${BASE}/api${path}`, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
@@ -40,7 +51,7 @@ async function api(method, path, body) {
 
 async function login(email, password) {
   if (!email || !password) throw new Error("Usage: ch-cli login <email> <password>");
-  const res = await fetch(`${BASE}/api/auth/login`, {
+  const res = await request(`${BASE}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
@@ -117,7 +128,7 @@ async function tailLogs(id) {
     if (msg.type === "log") console.log(msg.line);
     else if (msg.type === "stats")
       console.log(
-        `[stats] ${msg.stats.players} players · ${msg.stats.tps?.toFixed(1)} tps · ${Math.round(msg.stats.ram_used / 1024)}GB RAM`
+        `[stats] ${msg.stats.players ?? "?"} players · ${msg.stats.tps?.toFixed(1) ?? "?"} tps · ${msg.stats.ram_used != null ? Math.round(msg.stats.ram_used / 1024) : "?"}GB RAM`
       );
   });
   ws.addEventListener("close", () => process.exit(0));
@@ -169,7 +180,8 @@ Commands:
   help                            Show this help
 
 Environment:
-  CRAFTHOST_API  API base URL (default: http://localhost:4000)
+  CRAFTHOST_API         API base URL (default: http://localhost:4000)
+  CRAFTHOST_TIMEOUT_MS  Give up on an unresponsive API after this many ms (default: 20000)
 `;
 
 const args = {};

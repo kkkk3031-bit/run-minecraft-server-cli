@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { startMock, SERVERS } from "./helpers/mock-crafthost.mjs";
 
@@ -131,4 +132,35 @@ test("logs streams log lines and stats over the WebSocket", async () => {
   const ws = mock.requests.find((q) => q.method === "WS");
   assert.equal(ws.path, `/ws/servers/${SERVERS[0].id}/logs`);
   assert.equal(ws.token, "tok123");
+});
+
+test("an API that never answers fails after the timeout instead of hanging", async () => {
+  home = mkdtempSync(join(tmpdir(), "chcli-"));
+  loggedIn();
+  const silent = createServer(() => {}); // accepts, never responds
+  await new Promise((ok) => silent.listen(0, "127.0.0.1", ok));
+  const started = Date.now();
+  const r = await new Promise((ok) => execFile(process.execPath, [CLI, "list"], {
+    env: { ...process.env, HOME: home, USERPROFILE: home, CRAFTHOST_API: `http://127.0.0.1:${silent.address().port}`, CRAFTHOST_TIMEOUT_MS: "800" },
+    timeout: 15000,
+  }, (e, out, err) => ok({ code: e ? e.code : 0, out, err })));
+  silent.closeAllConnections();
+  silent.close();
+  assert.equal(r.code, 1);
+  assert.match(r.err, /No response from .* within 0\.8s/);
+  assert.ok(Date.now() - started < 10000, "gave up promptly");
+});
+
+test("an unreachable API gives a connection error", async () => {
+  home = mkdtempSync(join(tmpdir(), "chcli-"));
+  loggedIn();
+  const probe = createServer(); // grab a free port, then close it so nothing listens there
+  await new Promise((ok) => probe.listen(0, "127.0.0.1", ok));
+  const port = probe.address().port;
+  await new Promise((ok) => probe.close(ok));
+  const r = await new Promise((ok) => execFile(process.execPath, [CLI, "list"], {
+    env: { ...process.env, HOME: home, USERPROFILE: home, CRAFTHOST_API: `http://127.0.0.1:${port}` }, timeout: 15000,
+  }, (e, out, err) => ok({ code: e ? e.code : 0, out, err })));
+  assert.equal(r.code, 1);
+  assert.match(r.err, new RegExp(`Cannot reach http://127\\.0\\.0\\.1:${port}: ECONNREFUSED`));
 });

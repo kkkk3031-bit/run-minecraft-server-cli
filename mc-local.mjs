@@ -238,14 +238,15 @@ function sendCommand(dir, cmd) {
 }
 
 /** fetch with retries for network errors, 429 and 5xx (download hosts blip now and then). */
-async function fetchRetry(url, tries = 3) {
+async function fetchRetry(url, { tries = 3, timeoutMs = 30_000 } = {}) {
   for (let attempt = 1; ; attempt++) {
     try {
-      const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
+      const res = await fetch(url, { headers: { "User-Agent": USER_AGENT }, signal: AbortSignal.timeout(timeoutMs) });
       if ((res.status === 429 || res.status >= 500) && attempt < tries) throw new Error(`HTTP ${res.status}`);
       return res;
     } catch (err) {
-      if (attempt >= tries) throw new Error(`${url} → ${err.cause?.code || err.message}`);
+      const reason = err.name === "TimeoutError" ? `no response in ${timeoutMs / 1000}s` : err.cause?.code || err.cause?.message || err.message;
+      if (attempt >= tries) throw new Error(`${url} → ${reason}`);
       await new Promise((r) => setTimeout(r, 1000 * attempt));
     }
   }
@@ -331,7 +332,7 @@ async function install(dir, type, version, flags) {
   const cfg = loadConfig(dir);
   console.log(`Downloading ${type} ${target.version} server JAR…`);
   console.log("From:", target.url);
-  const res = await fetchRetry(target.url);
+  const res = await fetchRetry(target.url, { timeoutMs: 15 * 60_000 }); // the whole jar must arrive in 15 min
   if (!res.ok || !res.body) throw new Error(`Download failed: HTTP ${res.status} (is ${version} a valid ${type} version?)`);
 
   // Stream to disk while hashing, so a 100 MB jar never sits in memory.
