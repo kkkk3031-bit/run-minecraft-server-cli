@@ -25,7 +25,11 @@ for (const type of ["paper", "vanilla", "fabric", "purpur"]) {
     assert.equal(r.code, 0, r.err);
     const url = r.out.trim();
     assert.match(url, /^https:\/\//);
-    const res = await fetch(url, { headers: { "User-Agent": "run-minecraft-server-cli-ci" } });
+    let res;
+    for (let attempt = 1; ; attempt++) { // the CI network blips; one bad fetch should not fail the night
+      try { res = await fetch(url, { headers: { "User-Agent": "run-minecraft-server-cli-ci" } }); break; }
+      catch (err) { if (attempt === 3) throw err; await new Promise((r) => setTimeout(r, 2000 * attempt)); }
+    }
     assert.equal(res.status, 200, `${url} → ${res.status}`);
     await res.body.cancel();
   });

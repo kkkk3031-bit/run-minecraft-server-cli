@@ -231,8 +231,22 @@ function sendCommand(dir, cmd) {
   console.log("  mcrcon -p <password> " + JSON.stringify(cmd || "<command>"));
 }
 
+/** fetch with retries for network errors, 429 and 5xx (download hosts blip now and then). */
+async function fetchRetry(url, tries = 3) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
+      if ((res.status === 429 || res.status >= 500) && attempt < tries) throw new Error(`HTTP ${res.status}`);
+      return res;
+    } catch (err) {
+      if (attempt >= tries) throw new Error(`${url} → ${err.cause?.code || err.message}`);
+      await new Promise((r) => setTimeout(r, 1000 * attempt));
+    }
+  }
+}
+
 async function getJson(url) {
-  const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
+  const res = await fetchRetry(url);
   if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`);
   return res.json();
 }
@@ -284,7 +298,7 @@ async function install(dir, type, version, flags) {
   const cfg = loadConfig(dir);
   console.log(`Downloading ${type} ${version} server JAR…`);
   console.log("From:", target.url);
-  const res = await fetch(target.url, { headers: { "User-Agent": USER_AGENT } });
+  const res = await fetchRetry(target.url);
   if (!res.ok) throw new Error(`Download failed: HTTP ${res.status} (is ${version} a valid ${type} version?)`);
   const buf = Buffer.from(await res.arrayBuffer());
   for (const algo of ["sha256", "sha1"]) {
